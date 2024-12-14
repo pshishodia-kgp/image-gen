@@ -1,6 +1,7 @@
 import os
 
-import cv2
+# TODO(pshishodia): Undo for canny.
+# import cv2 
 import numpy as np
 import torch
 from einops import rearrange, repeat
