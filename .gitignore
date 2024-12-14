@@ -1,3 +1,1 @@
-.*venv
-FLUX.1-dev
-lora_weights.safetensors
+.venv/*
