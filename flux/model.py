@@ -80,6 +80,7 @@ class Flux(nn.Module):
         )
 
         self.final_layer = LastLayer(self.hidden_size, 1, self.out_channels)
+        self.mlp_ratio = params.mlp_ratio
 
     def forward(
         self,
@@ -122,7 +123,7 @@ class Flux(nn.Module):
 class FluxLoraWrapper(Flux):
     def __init__(
         self,
-        lora_rank: int = 128,
+        lora_rank: int = 16,
         lora_scale: float = 1.0,
         *args,
         **kwargs,

@@ -66,7 +66,7 @@ configs = {
         repo_flow="flux1-dev.safetensors",
         repo_ae="ae.safetensors",
         ckpt_path=os.getenv("FLUX_DEV"),
-        lora_path=None,
+        lora_path=os.getenv("FLUX_DEV_LORA"),
         params=FluxParams(
             in_channels=64,
             out_channels=64,
@@ -328,7 +328,7 @@ def load_flow_model(
     ):
         ckpt_path = hf_hub_download(configs[name].repo_id, configs[name].repo_flow)
 
-    with torch.device("meta" if ckpt_path is not None else device):
+    with torch.device(device):
         if lora_path is not None:
             model = FluxLoraWrapper(params=configs[name].params).to(torch.bfloat16)
         else:

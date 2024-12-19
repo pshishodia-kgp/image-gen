@@ -11,7 +11,9 @@ from transformers import pipeline
 from PIL import Image
 
 from flux.sampling import denoise, get_noise, get_schedule, prepare, unpack
-from flux.util import configs, load_ae, load_clip, load_flow_model, load_t5, save_image
+from flux.util import configs, load_ae, load_clip, load_flow_model, load_t5, save_image #, replace_single_stream_with_lora
+from flux.modules.lora import replace_single_stream_with_lora
+from safetensors.torch import load_file as load_sft
 
 NSFW_THRESHOLD = 0.85
 
@@ -46,8 +48,12 @@ class FluxSampler:
         
         self.t5 = load_t5(self.torch_device, max_length=256 if name == "flux-schnell" else 512)
         self.clip = load_clip(self.torch_device)
-        self.model = load_flow_model(name, self.torch_device)
+        self.model = load_flow_model(name, self.torch_device, verbose=True)
         self.ae = load_ae(name, self.torch_device)
+        
+    def add_fal_lora(self, lora_path: str, scale: float = 1, device="cuda"):
+        lora_sd = load_sft(lora_path, device=device)
+        replace_single_stream_with_lora(self.model, lora_state_dict=lora_sd, scale=scale)
 
     @torch.inference_mode()
     def __call__(
