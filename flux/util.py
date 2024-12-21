@@ -383,6 +383,12 @@ def load_ae(name: str, device: str | torch.device = "cuda", hf_download: bool = 
         print_load_warning(missing, unexpected)
     return ae
 
+def get_flux_models(name, device: str|torch.device):
+    t5 = load_t5(device, max_length=256 if name == "flux-schnell" else 512)
+    clip = load_clip(device)
+    model = load_flow_model(name, device)
+    ae = load_ae(name, device)
+    return t5, clip, model, ae
 
 def optionally_expand_state_dict(model: torch.nn.Module, state_dict: dict) -> dict:
     """

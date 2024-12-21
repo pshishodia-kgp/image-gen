@@ -54,7 +54,7 @@ def process_image(img_path, random_ratio, max_size):
         img = crop_to_nice_ratio(img, random_ratio)
         return img
     
-class LoraImageDataset(Dataset):
+class SFTImageDataset(Dataset):
     def __init__(self, img_dir, max_size=512, caption_type='json', random_ratio=False):
         self.images = [os.path.join(img_dir, i) for i in os.listdir(img_dir) if '.jpg' in i or '.png' in i]
         self.images.sort()
@@ -95,7 +95,7 @@ class FixedSizeSampler(Sampler):
     def __len__(self):
         return self.num_samples
 
-def loader(num_train_steps, train_batch_size, **args):
-    dataset = LoraImageDataset(**args)
+def sft_dataset_loader(num_train_steps, train_batch_size, **args):
+    dataset = SFTImageDataset(**args)
     sampler = FixedSizeSampler(num_examples=len(dataset), num_samples=num_train_steps * train_batch_size)
     return DataLoader(dataset, batch_size=train_batch_size, sampler=sampler)
