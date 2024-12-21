@@ -11,6 +11,7 @@ from tqdm.auto import tqdm
 from diffusers.optimization import get_scheduler
 from flux.sampling import get_schedule, prepare
 from flux.util import get_flux_models
+from flux.train_utils import sample_images
 
 from flux.dataset import sft_dataset_loader
 import wandb
@@ -60,6 +61,11 @@ class TrainConfig:
     sample_every: int = 500
     checkpointing_steps: int = 500
     inference_steps: int = 50 if model_name == "flux-dev" else 4
+    sample_prompts = ['me'] ## , 'me wearing red corset'
+    sample_width = 480
+    sample_height = 680
+    sample_steps = 50
+    sample_seed = 0
 
 def get_models(name: str, device):
     t5, clip, dit, ae = get_flux_models(name=name, device=device)
@@ -97,7 +103,7 @@ def main():
 
 
     # Init wandb. 
-    # wandb.init(project=config.wandb_project_name, name=config.wandb_run_name)
+    wandb.init(project=config.wandb_project_name, name=config.wandb_run_name)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     t5, clip, dit, ae = get_models(config.model_name, device)
@@ -137,7 +143,13 @@ def main():
         desc="Steps",
     )
 
+    wandb.config.update(config.__dict__)
     for _, batch in enumerate(train_dataloader):
+        if not config.disable_sampling and global_step % config.sample_every == 0:
+            print(f"Sampling images for step {global_step}...")
+            images = sample_images(config, clip, t5, ae, dit, device)
+            wandb.log({f"Step : {global_step}": [wandb.Image(img) for img in images]})
+        
         img, prompts = batch
         with torch.no_grad():
             # print(f"{img.shape=} | {img.dtype} | {img.device=}")
@@ -172,16 +184,14 @@ def main():
 
         progress_bar.update(1)
         global_step += 1
-
-        if not config.disable_sampling and global_step % config.sample_every == 0:
-            # sample()
-            pass
+            
 
         if global_step % config.checkpointing_steps == 0:
             # save_checkpoint()
             pass
 
         logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
+        wandb.log(logs)
         progress_bar.set_postfix(**logs)
 
         if global_step >= config.num_train_steps:

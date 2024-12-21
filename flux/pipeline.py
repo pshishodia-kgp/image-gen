@@ -44,6 +44,21 @@ class FluxSampler:
             available = ", ".join(configs.keys())
             raise ValueError(f"Got unknown model name: {name}, chose from {available}")
         self.t5, self.clip, self.model, self.ae = get_flux_models(name, device)
+        
+    def __init__(
+        self,
+        name,
+        clip,
+        t5, 
+        ae,
+        model,
+        device,
+    ):
+        self.name = name
+        self.torch_device = device
+        self.output_dir = None
+        
+        self.t5, self.clip, self.model, self.ae = t5, clip, model, ae
 
     @torch.inference_mode()
     def __call__(
