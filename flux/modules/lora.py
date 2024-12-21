@@ -1,6 +1,8 @@
 import torch
 from torch import nn
-
+from typing import Dict
+# from flux.model import Flux
+from flux.modules.layers import SingleStreamLoraBlock
 
 def replace_linear_with_lora(
     module: nn.Module,
@@ -30,6 +32,113 @@ def replace_linear_with_lora(
                 scale=scale,
             )
 
+def replace_single_stream_with_lora(
+    model: nn.Module,
+    lora_state_dict: Dict[str, torch.Tensor],
+    scale: float = 1.0,
+    device: str = "cuda",
+):
+    single_block_base = "transformer.single_transformer_blocks"
+    dtype = next(model.parameters()).dtype
+    for i in range(len(model.single_blocks)):
+        q_lora = lora_state_dict[f"{single_block_base}.{i}.attn.to_q.lora_B.weight"] @ lora_state_dict[f"{single_block_base}.{i}.attn.to_q.lora_A.weight"]
+        k_lora = lora_state_dict[f"{single_block_base}.{i}.attn.to_k.lora_B.weight"] @ lora_state_dict[f"{single_block_base}.{i}.attn.to_k.lora_A.weight"]
+        v_lora = lora_state_dict[f"{single_block_base}.{i}.attn.to_v.lora_B.weight"] @ lora_state_dict[f"{single_block_base}.{i}.attn.to_v.lora_A.weight"]
+        
+        q_lora = q_lora.to(device, dtype=dtype)
+        k_lora = k_lora.to(device, dtype=dtype)
+        v_lora = v_lora.to(device, dtype=dtype)
+        
+        new_single_block = SingleStreamLoraBlock(
+            model.hidden_size, 
+            model.num_heads, 
+            mlp_ratio=model.mlp_ratio, 
+            q_lora=q_lora, 
+            k_lora=k_lora,
+            v_lora=v_lora,
+            lora_weight=scale
+        ).to(device, dtype=dtype)
+        
+        model.single_blocks[i] = new_single_block
+        
+        
+def remap_lora_keys(state_dict):
+    """Remap LoRA keys to match Flux model structure"""
+    new_state_dict = {}
+    
+    # Handle single transformer blocks
+    for i in range(38):  # Based on depth_single_blocks in configs
+        # Map Q,K,V weights to combined QKV
+        base_key = f"transformer.single_transformer_blocks.{i}"
+        qkv_key = f"single_blocks.{i}.qkv"
+        
+        # Combine Q,K,V LoRA weights
+        q_a = state_dict[f"{base_key}.attn.to_q.lora_A.weight"]
+        k_a = state_dict[f"{base_key}.attn.to_k.lora_A.weight"]
+        v_a = state_dict[f"{base_key}.attn.to_v.lora_A.weight"]
+        
+        q_b = state_dict[f"{base_key}.attn.to_q.lora_B.weight"]
+        k_b = state_dict[f"{base_key}.attn.to_k.lora_B.weight"]
+        v_b = state_dict[f"{base_key}.attn.to_v.lora_B.weight"]
+        
+        # Stack them for combined QKV
+        new_state_dict[f"{qkv_key}.lora_A.weight"] = torch.cat([q_a, k_a, v_a], dim=0)
+        new_state_dict[f"{qkv_key}.lora_B.weight"] = torch.cat([q_b, k_b, v_b], dim=0)
+
+    # Handle double transformer blocks similarly
+    for i in range(19):  # Based on depth in configs
+        base_key = f"transformer.transformer_blocks.{i}"
+        
+        # Map for img attention
+        img_qkv_key = f"double_blocks.{i}.img_attn.qkv"
+        new_state_dict[f"{img_qkv_key}.lora_A.weight"] = torch.cat([
+            state_dict[f"{base_key}.attn.to_q.lora_A.weight"],
+            state_dict[f"{base_key}.attn.to_k.lora_A.weight"],
+            state_dict[f"{base_key}.attn.to_v.lora_A.weight"]
+        ], dim=0)
+        new_state_dict[f"{img_qkv_key}.lora_B.weight"] = torch.cat([
+            state_dict[f"{base_key}.attn.to_q.lora_B.weight"],
+            state_dict[f"{base_key}.attn.to_k.lora_B.weight"],
+            state_dict[f"{base_key}.attn.to_v.lora_B.weight"]
+        ], dim=0)
+        
+        # Map for txt attention
+        txt_qkv_key = f"double_blocks.{i}.txt_attn.qkv"
+        new_state_dict[f"{txt_qkv_key}.lora_A.weight"] = torch.cat([
+            state_dict[f"{base_key}.attn.add_q_proj.lora_A.weight"],
+            state_dict[f"{base_key}.attn.add_k_proj.lora_A.weight"],
+            state_dict[f"{base_key}.attn.add_v_proj.lora_A.weight"]
+        ], dim=0)
+        new_state_dict[f"{txt_qkv_key}.lora_B.weight"] = torch.cat([
+            state_dict[f"{base_key}.attn.add_q_proj.lora_B.weight"],
+            state_dict[f"{base_key}.attn.add_k_proj.lora_B.weight"],
+            state_dict[f"{base_key}.attn.add_v_proj.lora_B.weight"]
+        ], dim=0)
+
+    return new_state_dict
+
+# def apply_fal_lora_to_flux(model, lora_path, device="cuda"):
+#     """Apply LoRA weights to a Flux model"""
+#     # Load LoRA state dict
+#     lora_state_dict = torch.load(lora_path, map_location=device)
+    
+#     # Remap keys to match Flux structure
+#     remapped_state_dict = remap_lora_keys(lora_state_dict)
+    
+#     # Convert model to LoRA if not already
+#     if not isinstance(model, FluxLoraWrapper):
+#         model = FluxLoraWrapper(
+#             lora_rank=16,  # Use same rank as original LoRA
+#             lora_scale=1.0,
+#             params=model.params
+#         )
+        
+#     # Load remapped weights
+#     missing, unexpected = model.load_state_dict(remapped_state_dict, strict=False)
+#     print(f"Missing keys: {missing}")
+#     print(f"Unexpected keys: {unexpected}")
+    
+#     return model
 
 class LinearLora(nn.Linear):
     def __init__(

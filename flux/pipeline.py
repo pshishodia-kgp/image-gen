@@ -11,7 +11,9 @@ from transformers import pipeline
 from PIL import Image
 
 from flux.sampling import denoise, get_noise, get_schedule, prepare, unpack
-from flux.util import configs, load_ae, load_clip, load_flow_model, load_t5, save_image
+from flux.util import configs, load_ae, load_clip, load_flow_model, load_t5, save_image #, replace_single_stream_with_lora
+from flux.modules.lora import replace_single_stream_with_lora
+from safetensors.torch import load_file as load_sft
 
 NSFW_THRESHOLD = 0.85
 
@@ -44,10 +46,25 @@ class FluxSampler:
             available = ", ".join(configs.keys())
             raise ValueError(f"Got unknown model name: {name}, chose from {available}")
         
+        t0 = time.perf_counter()
         self.t5 = load_t5(self.torch_device, max_length=256 if name == "flux-schnell" else 512)
+        print(f"Loading T5 took {time.perf_counter() - t0:.2f}s")
+
+        t0 = time.perf_counter()
         self.clip = load_clip(self.torch_device)
-        self.model = load_flow_model(name, self.torch_device)
+        print(f"Loading CLIP took {time.perf_counter() - t0:.2f}s")
+
+        t0 = time.perf_counter()
+        self.model = load_flow_model(name, self.torch_device, verbose=True)
+        print(f"Loading flow model took {time.perf_counter() - t0:.2f}s")
+
+        t0 = time.perf_counter()
         self.ae = load_ae(name, self.torch_device)
+        print(f"Loading autoencoder took {time.perf_counter() - t0:.2f}s")
+        
+    def add_fal_lora(self, lora_path: str, scale: float = 1, device="cuda"):
+        lora_sd = load_sft(lora_path, device=device)
+        replace_single_stream_with_lora(self.model, lora_state_dict=lora_sd, scale=scale)
 
     @torch.inference_mode()
     def __call__(
@@ -103,9 +120,14 @@ class FluxSampler:
         inp = prepare(self.t5, self.clip, x, prompt=prompt)
         timesteps = get_schedule(num_steps, inp["img"].shape[1], shift=(self.name != "flux-schnell"))
 
+        torch.cuda.synchronize()
+        t2 = time.perf_counter()
         # denoise initial noise
         x = denoise(self.model, **inp, timesteps=timesteps, guidance=guidance)
-
+        torch.cuda.synchronize()
+        t3 = time.perf_counter()
+        print(f"Denoising took {t3 - t2:.1f}s.")
+        
         # decode latents to pixel space
         x = unpack(x.float(), height, width)
         with torch.autocast(device_type=self.torch_device.type, dtype=torch.bfloat16):
