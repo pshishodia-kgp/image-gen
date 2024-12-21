@@ -3,21 +3,17 @@ import os
 import random
 from dataclasses import dataclass
 
-import datasets
 import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
 import transformers
 from tqdm.auto import tqdm
-import diffusers
 from diffusers.optimization import get_scheduler
-from diffusers.utils import is_wandb_available
 from flux.sampling import get_schedule, prepare
 from flux.util import get_flux_models
 
 from flux.dataset import sft_dataset_loader
-if is_wandb_available():
-    import wandb
+import wandb
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
@@ -29,7 +25,7 @@ class TrainConfig:
     # Data config. 
     train_batch_size: int = 1
     max_img_size: int = 512
-    img_dir : str = 'images/'
+    img_dir : str = '/home/azureuser/workspace/x-flux/accel/srishti_rautela_/'
     random_ratio: str = False
     
     # wandb config.
@@ -44,7 +40,7 @@ class TrainConfig:
     resume_from_checkpoint: bool = False
     
     # Training config. 
-    max_train_steps: int = 1_000
+    num_train_steps: int = 1_000
     gradient_accumulation_steps: int = 1
     max_grad_norm: float = 1.0  
     
@@ -74,12 +70,14 @@ def get_models(name: str, device):
     ae.requires_grad_(False)
 
     dit.train()
-    # for n, param in dit.named_parameters():
-    #     if 'lora' not in n:
-    #         param.requires_grad = False
-    #     else:
-    #         print(n)
-            
+    allowed_params = [f'double_blocks.{i}.' for i in range(12,19)]
+
+    for n, param in dit.named_parameters():
+        if all(x not in n for x in allowed_params):
+            param.requires_grad = False
+        else:
+            # print(n)
+            pass
     print(sum([p.numel() for p in dit.parameters() if p.requires_grad]) / 1e6, 'M parameters')
     
     return t5, clip, dit, ae
@@ -91,9 +89,6 @@ def main():
         datefmt="%m/%d/%Y %H:%M:%S",
         level=logging.INFO,
     )
-    datasets.utils.logging.set_verbosity_warning()
-    transformers.utils.logging.set_verbosity_warning()
-    diffusers.utils.logging.set_verbosity_info()
     
     config = TrainConfig()
     if config.output_dir is not None:
@@ -102,7 +97,7 @@ def main():
 
 
     # Init wandb. 
-    wandb.init(project=config.wandb_project_name, name=config.wandb_run_name)
+    # wandb.init(project=config.wandb_project_name, name=config.wandb_run_name)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     t5, clip, dit, ae = get_models(config.model_name, device)
@@ -120,7 +115,7 @@ def main():
         config.lr_scheduler,
         optimizer=optimizer,
         num_warmup_steps=config.lr_warmup_steps,
-        num_training_steps=config.max_train_steps,
+        num_training_steps=config.num_train_steps,
     )
     
     train_dataloader = sft_dataset_loader(
@@ -137,7 +132,7 @@ def main():
         global_step = 0
 
     progress_bar = tqdm(
-        range(0, config.max_train_steps),
+        range(0, config.num_train_steps),
         initial=global_step,
         desc="Steps",
     )
@@ -145,11 +140,13 @@ def main():
     for _, batch in enumerate(train_dataloader):
         img, prompts = batch
         with torch.no_grad():
-            x_1 = ae.encode(img.to(device).to(torch.bfloat16))
+            # print(f"{img.shape=} | {img.dtype} | {img.device=}")
+            img = img.to(device)
+            x_1 = ae.encode(img).to(torch.bfloat16)
             inp = prepare(t5=t5, clip=clip, img=x_1, prompt=prompts)
             # x_1 = rearrange(x_1, "b c (h ph) (w pw) -> b (h w) (c ph pw)", ph=2, pw=2)
 
-        print(f"{inp['img'].shape=}")
+        # print(f"{inp['img'].shape=}")
         timesteps = get_schedule(config.inference_steps, inp["img"].shape[1], shift=(config.model_name != "flux-schnell"))
         x_1 = inp['img'].squeeze(dim=1)
         t = torch.tensor([timesteps[random.randint(0, config.inference_steps)]]).to(device).to(x_1.dtype)
@@ -187,7 +184,7 @@ def main():
         logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
         progress_bar.set_postfix(**logs)
 
-        if global_step >= config.max_train_steps:
+        if global_step >= config.num_train_steps:
             break
 
 if __name__ == "__main__":
