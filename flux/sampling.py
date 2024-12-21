@@ -253,6 +253,8 @@ def denoise(
     img_cond: Tensor | None = None,
 ):
     # this is ignored for schnell
+    img = img.to(model.img_in.weight.dtype)
+    txt = txt.to(model.txt_in.weight.dtype)
     guidance_vec = torch.full((img.shape[0],), guidance, device=img.device, dtype=img.dtype)
     for t_curr, t_prev in zip(timesteps[:-1], timesteps[1:]):
         t_vec = torch.full((img.shape[0],), t_curr, dtype=img.dtype, device=img.device)
@@ -261,7 +263,7 @@ def denoise(
             img_ids=img_ids,
             txt=txt,
             txt_ids=txt_ids,
-            y=vec,
+            y=vec.to(img.dtype),
             timesteps=t_vec,
             guidance=guidance_vec,
         )
