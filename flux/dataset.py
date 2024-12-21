@@ -14,7 +14,7 @@ def crop_to_nice_ratio(img, random_ratio=False):
     """
     w, h = img.size
     # Aspect ratio is maintained at // 16 to maintain nice ratio post cropping as well. 
-    w, h = w // 16, h // 16
+    w1, h1 = w // 16, h // 16
     
     # For ease of calculations, we assuming w >= h. 
     small_width = False
@@ -38,15 +38,15 @@ def crop_to_nice_ratio(img, random_ratio=False):
     if small_width:
         w, h = h, w
         
-    w_crop, h_crop = (img.size[0] - w) / 2, (img.size[1] - h) / 2
-    return img.crop(w_crop, h_crop // 2, w_crop, h_crop)
+    w_crop, h_crop = int(img.size[0] - w) // 2, int(img.size[1] - h) // 2
+    return img.crop((w_crop, h_crop, w_crop + w, h_crop + h))
     
 def resize_to_nice_dimensions(img, max_size=512):
     w, h = img.size
     down_factor = max(w/max_size, h/max_size, 1)
     w, h = w/down_factor, h / down_factor
-    w, h = (w // 16) * 16 , (h // 16) * 16
-    return img.resize(w, h)
+    w, h = int(w // 16) * 16 , int(h // 16) * 16
+    return img.resize((w, h))
 
 def process_image(img_path, random_ratio, max_size):
         img = Image.open(img_path).convert('RGB')
@@ -56,29 +56,33 @@ def process_image(img_path, random_ratio, max_size):
     
 class SFTImageDataset(Dataset):
     def __init__(self, img_dir, max_size=512, caption_type='json', random_ratio=False):
-        self.images = [os.path.join(img_dir, i) for i in os.listdir(img_dir) if '.jpg' in i or '.png' in i]
-        self.images.sort()
         self.max_size = max_size
         self.caption_type = caption_type
         self.random_ratio = random_ratio
+        
+        def get_img(img_path):
+            img = process_image(img_path, self.random_ratio, self.max_size)
+            return torch.from_numpy((np.array(img) / 127.5) - 1).to(torch.float32).permute(2, 0, 1)
+        
+        def get_prompt(img_path):
+            json_path = img_path.split('.')[0] + '.' + self.caption_type
+            if self.caption_type == "json":
+                return json.load(open(json_path))['caption']
+            return open(json_path).read()
+        
+        img_paths = [os.path.join(img_dir, i) for i in os.listdir(img_dir) if '.jpg' in i or '.png' in i]
+        self.data = [(get_img(img_path), get_prompt(img_path)) for img_path in img_paths]
+        # print(f"img sizes : {Counter([x[0].size for x in self.data]).most_common()}")
 
     def __len__(self):
-        return len(self.images)
+        return len(self.data)
 
     def __getitem__(self, idx):
         try:
-            img = process_image(self.images[idx], self.random_ratio, self.max_size)
-            img = torch.from_numpy((np.array(img) / 127.5) - 1).permute(2, 0, 1)
-            
-            json_path = self.images[idx].split('.')[0] + '.' + self.caption_type
-            if self.caption_type == "json":
-                prompt = json.load(open(json_path))['caption']
-            else:
-                prompt = open(json_path).read()
-            return img, prompt
+            return self.data[idx]
         except Exception as e:
             print(e)
-            return self.__getitem__(random.randint(0, len(self.images) - 1))
+            return self.__getitem__(random.randint(0, len(self) - 1))
 
 class FixedSizeSampler(Sampler):
     """Samples a fixed number of elements with replacement, regardless of dataset size."""
@@ -88,6 +92,7 @@ class FixedSizeSampler(Sampler):
         
     def __iter__(self) -> Iterator[int]:
         # Generate num_samples random indices with replacement
+        random.seed(37)
         indices = [random.randint(0, self.num_examples - 1) 
                   for _ in range(self.num_samples)]
         return iter(indices)
