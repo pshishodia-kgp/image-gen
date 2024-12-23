@@ -57,7 +57,9 @@ class TrainConfig:
     
     # LR Config
     lr_scheduler: str = "constant"
-    learning_rate: float = 4e-4
+    learning_rate: float = 1e-4
+    # Use a higher learning rate for B matrix. (init to zero.)
+    b_up_factor : float = None
     lr_warmup_steps: int = 10
     
     # Sampling config.
@@ -113,9 +115,23 @@ def main():
     t5, clip, dit, ae = get_models(config.model_name, device)
 
     optimizer_cls = torch.optim.AdamW
+    # TODO(pshishodia): Fix this for varying lr schedules?
+    grouped_params = [{'params': [p for n, p in dit.named_parameters() if p.requires_grad], 
+                       'lr': config.learning_rate * config.b_up_factor}]
+    if config.b_up_factor:
+        grouped_params = [
+            {
+                'params': [p for n, p in dit.named_parameters() if p.requires_grad and 'lora_B' in n],
+                'lr': config.learning_rate * config.b_up_factor
+            },
+            {
+                'params': [p for n, p in dit.named_parameters() if p.requires_grad and 'lora_B' not in n],
+                'lr': config.learning_rate
+            }
+        ]
+        
     optimizer = optimizer_cls(
-        [p for p in dit.parameters() if p.requires_grad],
-        lr=config.learning_rate,
+        grouped_params,
         betas=(config.adam_beta1, config.adam_beta2),
         weight_decay=config.adam_weight_decay,
         eps=config.adam_epsilon,
@@ -180,7 +196,8 @@ def main():
 
         loss = F.mse_loss(model_pred.float(), (x_0 - x_1).float(), reduction="mean")
         
-
+        # Normalize loss by gradient accumulation steps
+        loss = loss / config.gradient_accumulation_steps
         loss.backward()
         torch.nn.utils.clip_grad_norm_(dit.parameters(), config.max_grad_norm)
     
@@ -194,19 +211,17 @@ def main():
                         f"{name}_grad": param.grad.norm().item() if param.grad is not None else 0
                     }, step=global_step)
 
-        logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
+        if (step + 1) % config.gradient_accumulation_steps == 0:
+            optimizer.step()
+            optimizer.zero_grad()
+
+        logs = {"step_loss": loss.detach().item() * config.gradient_accumulation_steps, "lr": lr_scheduler.get_last_lr()[0]}
         wandb.log(logs, step=global_step)
         
-        
-        # Take next step. 
-        optimizer.step()
         lr_scheduler.step()
-        optimizer.zero_grad()
-
         progress_bar.set_postfix(**logs)
         progress_bar.update(1)
         global_step += 1
-            
 
         if global_step % config.checkpointing_steps == 0:
             # save_checkpoint()
