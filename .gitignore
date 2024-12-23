@@ -5,3 +5,4 @@ output/*
 *.safetensors
 wandb/*
 **/wandb/*
+train_images_processed/*
