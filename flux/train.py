@@ -12,6 +12,7 @@ from diffusers.optimization import get_scheduler
 from flux.sampling import get_schedule, prepare
 from flux.util import get_flux_models
 from flux.train_utils import sample_images
+from flux.modules.lora import replace_linear_with_lora
 
 from flux.dataset import sft_dataset_loader
 import wandb
@@ -54,11 +55,11 @@ class TrainConfig:
     # LR Config
     lr_scheduler: str = "constant"
     learning_rate: float = 1e-4
-    lr_warmup_steps: int = 500
+    lr_warmup_steps: int = 10
     
     # Sampling config.
     disable_sampling: bool = False
-    sample_every: int = 500
+    sample_every: int = 20
     checkpointing_steps: int = 500
     inference_steps: int = 50 if model_name == "flux-dev" else 4
     sample_prompts = ['me'] ## , 'me wearing red corset'
@@ -76,10 +77,10 @@ def get_models(name: str, device):
     ae.requires_grad_(False)
 
     dit.train()
-    allowed_params = [f'double_blocks.{i}.' for i in range(12,19)]
+    replace_linear_with_lora(dit, max_rank=16, scale=1.0)
 
     for n, param in dit.named_parameters():
-        if all(x not in n for x in allowed_params):
+        if 'lora' not in n:
             param.requires_grad = False
         else:
             # print(n)
@@ -148,7 +149,7 @@ def main():
         if not config.disable_sampling and global_step % config.sample_every == 0:
             print(f"Sampling images for step {global_step}...")
             images = sample_images(config, clip, t5, ae, dit, device)
-            wandb.log({f"Step : {global_step}": [wandb.Image(img) for img in images]})
+            wandb.log({'result' : [wandb.Image(img, caption=config.sample_prompts[i]) for i, img in enumerate(images)]}, step=global_step)
         
         img, prompts = batch
         with torch.no_grad():
@@ -161,7 +162,7 @@ def main():
         # print(f"{inp['img'].shape=}")
         timesteps = get_schedule(config.inference_steps, inp["img"].shape[1], shift=(config.model_name != "flux-schnell"))
         x_1 = inp['img'].squeeze(dim=1)
-        t = torch.tensor([timesteps[random.randint(0, config.inference_steps)]]).to(device).to(x_1.dtype)
+        t = torch.tensor([timesteps[random.randint(0, config.inference_steps - 1)]]).to(device).to(x_1.dtype)
         x_0 = torch.randn_like(x_1).to(device)
         x_t = (1 - t) * x_1 + t * x_0
         guidance_vec = torch.full((x_t.shape[0],), 4, device=x_1.device, dtype=x_1.dtype)
@@ -176,12 +177,29 @@ def main():
 
         loss = F.mse_loss(model_pred.float(), (x_0 - x_1).float(), reduction="mean")
         
-        optimizer.zero_grad()
+
         loss.backward()
         torch.nn.utils.clip_grad_norm_(dit.parameters(), config.max_grad_norm)
+    
+        # Log norm and std of all trainable parameters
+        for name, param in dit.named_parameters():
+            if param.requires_grad:
+                wandb.log({
+                    f"{name}_norm": param.norm().item(),
+                    f"{name}_std": param.std().item(),
+                    f"{name}_grad": param.grad.norm().item() if param.grad is not None else 0
+                }, step=global_step)
+
+        logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
+        wandb.log(logs, step=global_step)
+        
+        
+        # Take next step. 
         optimizer.step()
         lr_scheduler.step()
+        optimizer.zero_grad()
 
+        progress_bar.set_postfix(**logs)
         progress_bar.update(1)
         global_step += 1
             
@@ -189,13 +207,6 @@ def main():
         if global_step % config.checkpointing_steps == 0:
             # save_checkpoint()
             pass
-
-        logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
-        wandb.log(logs)
-        progress_bar.set_postfix(**logs)
-
-        if global_step >= config.num_train_steps:
-            break
 
 if __name__ == "__main__":
     main()
