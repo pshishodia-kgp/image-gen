@@ -80,6 +80,17 @@ class LinearLora(nn.Linear):
             dtype=dtype,
             device=device,
         )
+        
+        # TODO(pshishodia): Revisit initialization and other lora features. 
+        # 1. Orthogonal Initialization : https://www.reddit.com/r/MachineLearning/comments/1dadfcv/r_testing_lora_initialisations/
+        # 1. network_alpha : https://github.com/XLabs-AI/x-flux/blob/main/src/flux/modules/layers.py#L94
+        # 3. b_up_factor : There's b_up_factor in falai's config. This is probably up factor for learning rate as per LoRA+ paper : 
+        # https://arxiv.org/pdf/2402.12354
+        torch.nn.init.kaiming_uniform_(self.lora_A.weight, a=5**(1/2))
+        nn.init.zeros_(self.lora_B.weight)
+
+        if self.lora_bias:
+            nn.init.zeros_(self.lora_B.bias)
 
     def set_scale(self, scale: float) -> None:
         assert isinstance(scale, float), "scalar value must be a float"
