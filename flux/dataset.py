@@ -54,13 +54,24 @@ def process_image(img_path, random_ratio, max_size):
         img = crop_to_nice_ratio(img, random_ratio)
         return img
     
+def log_images(images, dir_):
+    if not os.path.exists(dir_):
+        os.makedirs(dir_)
+    else:
+        # Clear existing files
+        for file in os.listdir(dir_):
+            os.remove(os.path.join(dir_, file))
+            
+    for idx, img in enumerate(images):
+        img.save(os.path.join(dir_, f'img_{idx}.jpg'))
+
 class SFTImageDataset(Dataset):
     def __init__(self, img_dir, max_size=512, caption_type='json', random_ratio=False):
         self.max_size = max_size
         self.caption_type = caption_type
         self.random_ratio = random_ratio
         
-        def get_img(img_path):
+        def get_img(img):
             img = process_image(img_path, self.random_ratio, self.max_size)
             return torch.from_numpy((np.array(img) / 127.5) - 1).to(torch.float32).permute(2, 0, 1)
         
@@ -71,15 +82,21 @@ class SFTImageDataset(Dataset):
             return open(json_path).read()
         
         img_paths = [os.path.join(img_dir, i) for i in os.listdir(img_dir) if '.jpg' in i or '.png' in i]
-        self.data = [(get_img(img_path), get_prompt(img_path)) for img_path in img_paths]
+        processed_images = [process_image(img_path, self.random_ratio, self.max_size) for img_path in img_paths]
+        
+        log_images(images=processed_images, dir_='train_images_processed')
+        
+        # TODO(pshishodia): possibly we should only store raw processed images here, and construct the tensor in __getitem__ allowing for augmentation. 
+        self.images = [torch.from_numpy((np.array(img) / 127.5) - 1).to(torch.float32).permute(2, 0, 1) for img in processed_images]
+        self.prompts = [get_prompt(img_path) for img_path in img_paths]
         # print(f"img sizes : {Counter([x[0].size for x in self.data]).most_common()}")
 
     def __len__(self):
-        return len(self.data)
+        return len(self.images)
 
     def __getitem__(self, idx):
         try:
-            return self.data[idx]
+            return self.images[idx], self.prompts[idx]
         except Exception as e:
             print(e)
             return self.__getitem__(random.randint(0, len(self) - 1))
