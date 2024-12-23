@@ -2,3 +2,6 @@
 **/__pycache__/
 output/*
 *.ipynb
+*.safetensors
+wandb/*
+**/wandb/*
