@@ -98,7 +98,7 @@ class FluxSampler:
 
         if seed is None:
             seed = rng.seed()
-        print(f"Generating image with {seed=}:\n{prompt=}")
+        print(f"Generating image with {seed=} | {prompt=}")
         t0 = time.perf_counter()
 
         # prepare input

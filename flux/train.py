@@ -44,7 +44,10 @@ class TrainConfig:
     # Training config. 
     num_train_steps: int = 1_000
     gradient_accumulation_steps: int = 1
-    max_grad_norm: float = 1.0  
+    max_grad_norm: float = 1.0
+    
+    # NOTE: When =1, it significantly slows down the training from 7 mins -> 12 mins for 1K steps. only use for debugging.
+    detailed_metrics_log_steps : int = None
     
     # optimizer config.
     adam_beta1: float = 0.9
@@ -54,18 +57,18 @@ class TrainConfig:
     
     # LR Config
     lr_scheduler: str = "constant"
-    learning_rate: float = 1e-4
+    learning_rate: float = 4e-4
     lr_warmup_steps: int = 10
     
     # Sampling config.
     disable_sampling: bool = False
-    sample_every: int = 20
+    sample_every: int = 100
     checkpointing_steps: int = 500
     inference_steps: int = 50 if model_name == "flux-dev" else 4
     sample_prompts = ['me'] ## , 'me wearing red corset'
     sample_width = 480
     sample_height = 680
-    sample_steps = 50
+    sample_steps = 30
     sample_seed = 0
 
 def get_models(name: str, device):
@@ -146,26 +149,26 @@ def main():
 
     wandb.config.update(config.__dict__)
     for _, batch in enumerate(train_dataloader):
-        if not config.disable_sampling and global_step % config.sample_every == 0:
+        if not config.disable_sampling and (global_step % config.sample_every == 0 or global_step + 1 == config.num_train_steps):
             print(f"Sampling images for step {global_step}...")
             images = sample_images(config, clip, t5, ae, dit, device)
             wandb.log({'result' : [wandb.Image(img, caption=config.sample_prompts[i]) for i, img in enumerate(images)]}, step=global_step)
         
         img, prompts = batch
         with torch.no_grad():
-            # print(f"{img.shape=} | {img.dtype} | {img.device=}")
-            img = img.to(device)
-            x_1 = ae.encode(img).to(torch.bfloat16)
+            img = img.to(device) # (b, 3, h, w)
+            x_1 = ae.encode(img).to(torch.bfloat16) # (b, 16, h/8, w/8) => only 4x reduction??
             inp = prepare(t5=t5, clip=clip, img=x_1, prompt=prompts)
             # x_1 = rearrange(x_1, "b c (h ph) (w pw) -> b (h w) (c ph pw)", ph=2, pw=2)
 
-        # print(f"{inp['img'].shape=}")
         timesteps = get_schedule(config.inference_steps, inp["img"].shape[1], shift=(config.model_name != "flux-schnell"))
-        x_1 = inp['img'].squeeze(dim=1)
+        x_1 = inp['img']
         t = torch.tensor([timesteps[random.randint(0, config.inference_steps - 1)]]).to(device).to(x_1.dtype)
         x_0 = torch.randn_like(x_1).to(device)
         x_t = (1 - t) * x_1 + t * x_0
-        guidance_vec = torch.full((x_t.shape[0],), 4, device=x_1.device, dtype=x_1.dtype)
+        # NOTE: guidance_vec only works at guidance=1.0. at any other guidance training doesn't work, and produces very bad images. 
+        # This is probably an artifact of de-distillation, but not  sure. 
+        guidance_vec = torch.full((x_t.shape[0],), 1.0, device=x_1.device, dtype=x_1.dtype)
 
         model_pred = dit(img=x_t,
                         img_ids=inp['img_ids'],
@@ -182,13 +185,14 @@ def main():
         torch.nn.utils.clip_grad_norm_(dit.parameters(), config.max_grad_norm)
     
         # Log norm and std of all trainable parameters
-        for name, param in dit.named_parameters():
-            if param.requires_grad:
-                wandb.log({
-                    f"{name}_norm": param.norm().item(),
-                    f"{name}_std": param.std().item(),
-                    f"{name}_grad": param.grad.norm().item() if param.grad is not None else 0
-                }, step=global_step)
+        if config.detailed_metrics_log_steps and config.detailed_metrics_log_steps % global_step == 0:
+            for name, param in dit.named_parameters():
+                if param.requires_grad:
+                    wandb.log({
+                        f"{name}_norm": param.norm().item(),
+                        f"{name}_std": param.std().item(),
+                        f"{name}_grad": param.grad.norm().item() if param.grad is not None else 0
+                    }, step=global_step)
 
         logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
         wandb.log(logs, step=global_step)
