@@ -9,7 +9,7 @@ import torch.utils.checkpoint
 import transformers
 from tqdm.auto import tqdm
 from diffusers.optimization import get_scheduler
-from flux.sampling import get_schedule, prepare
+from flux.sampling import get_schedule, prepare, get_t5_embed, get_clip_embed
 from flux.util import get_flux_models
 from flux.train_utils import sample_images
 from flux.modules.lora import replace_linear_with_lora
@@ -45,6 +45,8 @@ class TrainConfig:
     num_train_steps: int = 1_000
     gradient_accumulation_steps: int = 1
     max_grad_norm: float = 1.0
+    max_inference_steps: int = 50 if model_name == "flux-dev" else 4
+    min_inference_steps: int = 25 if model_name == "flux-dev" else 4
     
     # NOTE: When =1, it significantly slows down the training from 7 mins -> 12 mins for 1K steps. only use for debugging.
     detailed_metrics_log_steps : int = None
@@ -66,7 +68,6 @@ class TrainConfig:
     disable_sampling: bool = False
     sample_every: int = 100
     checkpointing_steps: int = 500
-    inference_steps: int = 50 if model_name == "flux-dev" else 4
     sample_prompts = ['me'] ## , 'me wearing red corset'
     sample_width = 480
     sample_height = 680
@@ -113,11 +114,12 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     t5, clip, dit, ae = get_models(config.model_name, device)
+    t5_embed, clip_embed = get_t5_embed(t5), get_clip_embed(clip)
 
     optimizer_cls = torch.optim.AdamW
     # TODO(pshishodia): Fix this for varying lr schedules?
-    grouped_params = [{'params': [p for n, p in dit.named_parameters() if p.requires_grad], 
-                       'lr': config.learning_rate * config.b_up_factor}]
+    grouped_params = [{'params': [p for _, p in dit.named_parameters() if p.requires_grad], 
+                       'lr': config.learning_rate}]
     if config.b_up_factor:
         grouped_params = [
             {
@@ -174,12 +176,13 @@ def main():
         with torch.no_grad():
             img = img.to(device) # (b, 3, h, w)
             x_1 = ae.encode(img).to(torch.bfloat16) # (b, 16, h/8, w/8) => only 4x reduction??
-            inp = prepare(t5=t5, clip=clip, img=x_1, prompt=prompts)
+            inp = prepare(t5=t5_embed, clip=clip_embed, img=x_1, prompt=prompts)
             # x_1 = rearrange(x_1, "b c (h ph) (w pw) -> b (h w) (c ph pw)", ph=2, pw=2)
 
-        timesteps = get_schedule(config.inference_steps, inp["img"].shape[1], shift=(config.model_name != "flux-schnell"))
+        num_steps = random.randint(config.min_inference_steps, config.max_inference_steps)
+        timesteps = get_schedule(num_steps, inp["img"].shape[1], shift=(config.model_name != "flux-schnell"))
         x_1 = inp['img']
-        t = torch.tensor([timesteps[random.randint(0, config.inference_steps - 1)]]).to(device).to(x_1.dtype)
+        t = torch.tensor([timesteps[random.randint(0, num_steps - 1)]]).to(device).to(x_1.dtype)
         x_0 = torch.randn_like(x_1).to(device)
         x_t = (1 - t) * x_1 + t * x_0
         # NOTE: guidance_vec only works at guidance=1.0. at any other guidance training doesn't work, and produces very bad images. 
@@ -211,7 +214,7 @@ def main():
                         f"{name}_grad": param.grad.norm().item() if param.grad is not None else 0
                     }, step=global_step)
 
-        if (step + 1) % config.gradient_accumulation_steps == 0:
+        if (global_step + 1) % config.gradient_accumulation_steps == 0:
             optimizer.step()
             optimizer.zero_grad()
 
