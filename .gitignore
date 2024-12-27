@@ -2,3 +2,7 @@
 **/__pycache__/
 output/*
 *.ipynb
+*.safetensors
+wandb/*
+**/wandb/*
+train_images_processed/*

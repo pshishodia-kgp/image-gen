@@ -11,7 +11,7 @@ from transformers import pipeline
 from PIL import Image
 
 from flux.sampling import denoise, get_noise, get_schedule, prepare, unpack
-from flux.util import configs, load_ae, load_clip, load_flow_model, load_t5, save_image
+from flux.util import configs, save_image, get_flux_models
 
 NSFW_THRESHOLD = 0.85
 
@@ -27,7 +27,7 @@ def get_output_filename(output_dir):
         else:
             idx = 0
     return output_name.format(idx=idx)
-
+    
 class FluxSampler:
     def __init__(
         self,
@@ -43,11 +43,22 @@ class FluxSampler:
         if name not in configs:
             available = ", ".join(configs.keys())
             raise ValueError(f"Got unknown model name: {name}, chose from {available}")
+        self.t5, self.clip, self.model, self.ae = get_flux_models(name, device)
         
-        self.t5 = load_t5(self.torch_device, max_length=256 if name == "flux-schnell" else 512)
-        self.clip = load_clip(self.torch_device)
-        self.model = load_flow_model(name, self.torch_device)
-        self.ae = load_ae(name, self.torch_device)
+    def __init__(
+        self,
+        name,
+        clip,
+        t5, 
+        ae,
+        model,
+        device,
+    ):
+        self.name = name
+        self.torch_device = device
+        self.output_dir = None
+        
+        self.t5, self.clip, self.model, self.ae = t5, clip, model, ae
 
     @torch.inference_mode()
     def __call__(
@@ -87,7 +98,7 @@ class FluxSampler:
 
         if seed is None:
             seed = rng.seed()
-        print(f"Generating image with {seed=}:\n{prompt=}")
+        print(f"Generating image with {seed=} | {prompt=}")
         t0 = time.perf_counter()
 
         # prepare input

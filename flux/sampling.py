@@ -11,6 +11,7 @@ from .model import Flux
 from .modules.autoencoder import AutoEncoder
 from .modules.conditioner import HFEmbedder
 from .modules.image_embedders import CannyImageEncoder, DepthImageEncoder, ReduxImageEncoder
+from functools import lru_cache
 
 
 def get_noise(
@@ -32,8 +33,22 @@ def get_noise(
         generator=torch.Generator(device=device).manual_seed(seed),
     )
 
+# NOTE: Using cache for t5, clip  results in 13% improvements. Metrics for 500 steps. 
+# 1. without cache : 3:55 min ~2.12 it / s. 
+# 2. with cache : 3:27 min ~2.41 it/s
+def get_t5_embed(t5):
+    @lru_cache(maxsize=128)
+    def embed(prompt: str):
+        return t5(prompt)
+    return embed
 
-def prepare(t5: HFEmbedder, clip: HFEmbedder, img: Tensor, prompt: str | list[str]) -> dict[str, Tensor]:
+def get_clip_embed(clip):
+    @lru_cache(maxsize=128)
+    def embed(prompt: str):
+        return clip(prompt)
+    return embed
+
+def prepare(t5, clip, img: Tensor, prompt: str | list[str]) -> dict[str, Tensor]:
     bs, c, h, w = img.shape
     if bs == 1 and not isinstance(prompt, str):
         bs = len(prompt)
